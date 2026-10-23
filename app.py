@@ -1,8 +1,8 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 import math
 import folium
+from streamlit_folium import st_folium
 
 # API 키 고정
 KAKAO_API_KEY = "0291962fedf3b68a740109ab85832466"
@@ -77,6 +77,33 @@ def get_route_coords(start_lat, start_lon, end_lat, end_lon):
             for i in range(0, len(v), 2):
                 route_coords.append((v[i+1], v[i]))
     return route_coords
+
+def get_walking_route(start_lat, start_lon, end_lat, end_lon):
+    """보행자/산책로/자전거도로 우선 경로 탐색 (OSRM Foot API, 실패 시 카카오 연동)"""
+    try:
+        url = f"https://routing.openstreetmap.de/routed-foot/route/v1/driving/{start_lon},{start_lat};{end_lon},{end_lat}?overview=full&geometries=geojson"
+        res = requests.get(url, timeout=4).json()
+        if res.get("code") == "Ok":
+            coords = res["routes"][0]["geometry"]["coordinates"]
+            dist_km = res["routes"][0]["distance"] / 1000.0
+            return [(c[1], c[0]) for c in coords], dist_km
+    except Exception:
+        pass
+    # 백업: 카카오 경로
+    pts = get_route_coords(start_lat, start_lon, end_lat, end_lon)
+    dist = sum(haversine(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1]) for i in range(len(pts)-1)) if len(pts) > 1 else 0.0
+    return pts, dist
+
+def calculate_destination_point(lat, lon, distance_km, bearing_deg):
+    """출발 좌표에서 특정 방향(각도)으로 일정 거리 떨어진 목표 좌표 계산"""
+    R = 6371.0
+    brng = math.radians(bearing_deg)
+    d = distance_km
+    lat1 = math.radians(lat)
+    lon1 = math.radians(lon)
+    lat2 = math.asin(math.sin(lat1)*math.cos(d/R) + math.cos(lat1)*math.sin(d/R)*math.cos(brng))
+    lon2 = lon1 + math.atan2(math.sin(brng)*math.sin(d/R)*math.cos(lat1), math.cos(d/R)-math.sin(lat1)*math.sin(lat2))
+    return math.degrees(lat2), math.degrees(lon2)
 
 def detect_regions_from_route(route_coords):
     url = "https://dapi.kakao.com/v2/local/geo/coord2regioncode.json"
@@ -343,62 +370,113 @@ with tab2:
                     )
                 st.divider()
 
-# 탭 3: 러닝 코스 지도 연동
+# 탭 3: 러닝 코스 지도 (핀셋 클릭 지정 방식)
 with tab3:
-    st.markdown("### 🏃‍♂️ 러닝 코스 지도 확인")
-    
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        r_start = st.text_input("출발지 (현재위치/장소명)", value="태화강국가정원", key="run_start")
-    with col_r2:
-        r_end = st.text_input("도착지 (반환점/목적지)", value="울산대공원 동문", key="run_end")
+    st.markdown("### 🏃‍♂️ 지도 클릭으로 러닝 코스 만들기")
+
+    # 세션 상태 초기화 (대공원한신더휴 기본 좌표)
+    if "run_start_pt" not in st.session_state:
+        st.session_state.run_start_pt = (35.5323, 129.3080)
+    if "run_end_pt" not in st.session_state:
+        st.session_state.run_end_pt = (35.5458, 129.2930)
+    if "map_center" not in st.session_state:
+        st.session_state.map_center = [35.5380, 129.3000]
+
+    # 빠른 장소 이동 검색창
+    col_s1, col_s2 = st.columns([3, 1])
+    with col_s1:
+        search_loc = st.text_input("지도 중심 빠른 이동 (동네/공원명)", value="대공원한신더휴", label_visibility="collapsed")
+    with col_s2:
+        if st.button("이동", use_container_width=True):
+            lat, lon = get_coords(search_loc)
+            if lat:
+                st.session_state.map_center = [lat, lon]
+                st.session_state.run_start_pt = (lat, lon)
+                st.rerun()
+
+    # 모드 선택
+    course_type = st.radio(
+        "코스 만들기 방식",
+        ["📍 지도에 직접 출발/도착 핀 찍기", "🔄 목표 거리(km) 입력 후 자동 왕복 코스"],
+        horizontal=True
+    )
+
+    if course_type == "📍 지도에 직접 출발/도착 핀 찍기":
+        click_mode = st.radio(
+            "지금 지도에서 터치할 핀을 고르세요:",
+            ["🟢 출발지 핀 찍기", "🔴 도착지(반환점) 핀 찍기"],
+            horizontal=True
+        )
+    else:
+        st.caption("💡 지도를 터치하면 그 위치가 '출발지'로 변경됩니다.")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            target_km = st.slider("목표 왕복 거리 (km)", 2.0, 20.0, 5.0, 0.5)
+        with col_d2:
+            direction_opt = st.selectbox("코스 방향 선택", ["북쪽(태화강 방향)", "동쪽", "남쪽(대공원 방향)", "서쪽"])
         
-    if st.button("🗺️ 지도에 러닝 코스 그리기", type="primary", use_container_width=True):
-        rs_lat, rs_lon = get_coords(r_start)
-        re_lat, re_lon = get_coords(r_end)
-        
-        if not rs_lat or not re_lat:
-            st.error("장소 위치를 찾을 수 없습니다. 정확한 건물명이나 지명을 적어주세요.")
+        dir_angles = {"북쪽(태화강 방향)": 0, "동쪽": 90, "남쪽(대공원 방향)": 180, "서쪽": 270}
+        # 직선 대비 실제 도보 굴곡률(약 1.3배)을 감안해 반환점 계산
+        half_straight_km = (target_km / 2.0) / 1.25
+        s_lat, s_lon = st.session_state.run_start_pt
+        t_lat, t_lon = calculate_destination_point(s_lat, s_lon, half_straight_km, dir_angles[direction_opt])
+        st.session_state.run_end_pt = (t_lat, t_lon)
+
+    # 경로 및 거리 실시간 계산 (보행자/산책로 우선)
+    s_lat, s_lon = st.session_state.run_start_pt
+    e_lat, e_lon = st.session_state.run_end_pt
+    route_pts, one_way_km = get_walking_route(s_lat, s_lon, e_lat, e_lon)
+
+    if course_type == "📍 지도에 직접 출발/도착 핀 찍기":
+        st.success(f"🏃‍♂️ **편도 거리:** {one_way_km:.2f} km  |  **왕복 시:** {one_way_km*2:.2f} km")
+    else:
+        st.success(f"🔄 **자동 설계된 왕복 러닝 거리:** 약 **{one_way_km*2:.2f} km** (반환점까지 편도 {one_way_km:.2f} km)")
+
+    # 지도 그리기
+    m = folium.Map(location=st.session_state.map_center, zoom_start=14)
+
+    # 출발지 핀
+    folium.Marker(
+        [s_lat, s_lon],
+        tooltip="출발지 (초록 핀)",
+        icon=folium.Icon(color="green", icon="play")
+    ).add_to(m)
+
+    # 도착지(반환점) 핀
+    folium.Marker(
+        [e_lat, e_lon],
+        tooltip="도착/반환점 (빨강 핀)",
+        icon=folium.Icon(color="red", icon="flag")
+    ).add_to(m)
+
+    # 러닝 코스 라인
+    if route_pts:
+        folium.PolyLine(
+            route_pts,
+            color="#FF4B4B",
+            weight=5,
+            opacity=0.85
+        ).add_to(m)
+
+    # 지도를 화면에 띄우고 사용자의 클릭(터치) 좌표를 즉시 감지
+    map_data = st_folium(m, width="100%", height=480, returned_objects=["last_clicked"])
+
+    if map_data and map_data.get("last_clicked"):
+        clicked_lat = map_data["last_clicked"]["lat"]
+        clicked_lon = map_data["last_clicked"]["lng"]
+        new_pt = (clicked_lat, clicked_lon)
+
+        if course_type == "📍 지도에 직접 출발/도착 핀 찍기":
+            if "출발지" in click_mode and new_pt != st.session_state.run_start_pt:
+                st.session_state.run_start_pt = new_pt
+                st.session_state.map_center = [clicked_lat, clicked_lon]
+                st.rerun()
+            elif "도착지" in click_mode and new_pt != st.session_state.run_end_pt:
+                st.session_state.run_end_pt = new_pt
+                st.session_state.map_center = [clicked_lat, clicked_lon]
+                st.rerun()
         else:
-            with st.spinner("경로를 지도 위에 그리는 중..."):
-                route_pts = get_route_coords(rs_lat, rs_lon, re_lat, re_lon)
-                
-                total_km = 0.0
-                for i in range(len(route_pts) - 1):
-                    total_km += haversine(route_pts[i][0], route_pts[i][1], route_pts[i+1][0], route_pts[i+1][1])
-                
-                st.success(f"🎯 **{r_start}** ➔ **{r_end}** 러닝 코스 거리: **{total_km:.2f} km**")
-                
-                # 1. Folium 지도 객체 생성
-                mid_lat = (rs_lat + re_lat) / 2
-                mid_lon = (rs_lon + re_lon) / 2
-                m = folium.Map(location=[mid_lat, mid_lon], zoom_start=13)
-                
-                # 2. 마커 추가
-                folium.Marker(
-                    [rs_lat, rs_lon],
-                    popup=f"출발: {r_start}",
-                    tooltip="출발지",
-                    icon=folium.Icon(color="green", icon="play")
-                ).add_to(m)
-                
-                folium.Marker(
-                    [re_lat, re_lon],
-                    popup=f"도착: {r_end}",
-                    tooltip="도착지",
-                    icon=folium.Icon(color="red", icon="flag")
-                ).add_to(m)
-                
-                # 3. 경로 선 그리기
-                if route_pts:
-                    folium.PolyLine(
-                        route_pts,
-                        color="#2B82F6",
-                        weight=5,
-                        opacity=0.8,
-                        tooltip=f"러닝 코스 ({total_km:.2f}km)"
-                    ).add_to(m)
-                
-                # 4. 스트림릿 HTML 렌더러로 고정 (새로고침 풀림 버그 방지)
-                map_html = m._repr_html_()
-                components.html(map_html, height=500, scrolling=False)
+            if new_pt != st.session_state.run_start_pt:
+                st.session_state.run_start_pt = new_pt
+                st.session_state.map_center = [clicked_lat, clicked_lon]
+                st.rerun()

@@ -2,13 +2,18 @@ import streamlit as st
 import requests
 import math
 
-# API 키 고정 완료
+# API 키 고정
 KAKAO_API_KEY = "0291962fedf3b68a740109ab85832466"
 PUBLIC_DATA_KEY = "6a6056072358948fb6fdef29d501b7d1321dcc299215a20418dcb7c478f98614"
 
-REGION_MAP = {
-    "울산": "31", "부산": "26", "경남": "48", "경북": "47", 
-    "대구": "27", "서울": "11", "경기": "41"
+# 전국 17개 시도 코드 매핑 (경로 좌표에서 자동 감지용)
+REGION_NAME_TO_CODE = {
+    "서울": "11", "부산": "26", "대구": "27", "인천": "28",
+    "광주": "29", "대전": "30", "울산": "31", "세종": "36",
+    "경기": "41", "강원": "42", "충북": "43", "충청북도": "43",
+    "충남": "44", "충청남도": "44", "전북": "45", "전라북도": "45",
+    "전남": "46", "전라남도": "46", "경북": "47", "경상북도": "47",
+    "경남": "48", "경상남도": "48", "제주": "50"
 }
 
 TARGET_OPERATORS = {
@@ -60,6 +65,32 @@ def get_route_coords(start_lat, start_lon, end_lat, end_lon):
             for i in range(0, len(v), 10):
                 route_coords.append((v[i+1], v[i]))
     return route_coords
+
+def detect_regions_from_route(route_coords):
+    """카카오 경로 좌표를 분석해 거쳐가는 시/도 코드를 자동으로 추출"""
+    url = "https://dapi.kakao.com/v2/local/geo/coord2regioncode.json"
+    headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY.strip()}"}
+    detected_codes = set()
+    detected_names = []
+    
+    # 경로 전체에서 약 15개 지점을 샘플링하여 시/도 확인
+    step = max(1, len(route_coords) // 15)
+    sample_points = route_coords[::step]
+    if route_coords[-1] not in sample_points:
+        sample_points.append(route_coords[-1])
+        
+    for lat, lon in sample_points:
+        res = requests.get(url, headers=headers, params={"x": str(lon), "y": str(lat)}).json()
+        for doc in res.get("documents", []):
+            if doc.get("region_type") == "H":
+                r1 = doc.get("region_1depth_name", "")
+                for key, zcode in REGION_NAME_TO_CODE.items():
+                    if key in r1:
+                        if zcode not in detected_codes:
+                            detected_codes.add(zcode)
+                            detected_names.append(key)
+                        break
+    return list(detected_codes), detected_names
 
 @st.cache_data(ttl=600)
 def get_chargers(zcode):
@@ -127,11 +158,6 @@ with col1:
 with col2:
     end_place = st.text_input("목적지", value="솔봉숯불구이")
 
-selected_regions = st.multiselect(
-    "거쳐가는 지역 선택",
-    options=list(REGION_MAP.keys()),
-    default=["울산", "부산"]
-)
 max_dist = st.slider("경로 이탈 허용 거리 (km)", 0.5, 5.0, 2.0, 0.5)
 
 if st.button("최저가 충전소 검색하기", type="primary", use_container_width=True):
@@ -141,11 +167,16 @@ if st.button("최저가 충전소 검색하기", type="primary", use_container_w
     if not s_lat or not e_lat:
         st.error("출발지나 목적지 위치를 찾을 수 없습니다. 지역명을 포함해 다시 입력해 보세요.")
     else:
-        with st.spinner("내비게이션 경로 및 충전소 요금 비교 중..."):
+        with st.spinner("카카오내비 경로 분석 및 경유 지역 충전소 자동 탐색 중..."):
             route = get_route_coords(s_lat, s_lon, e_lat, e_lon)
+            
+            # 경로 좌표를 기반으로 지나가는 시/도 자동 감지
+            region_codes, region_names = detect_regions_from_route(route)
+            st.caption(f"📍 자동 감지된 경유 지역: {', '.join(region_names)}")
+            
             all_chargers = []
-            for r_name in selected_regions:
-                all_chargers.extend(get_chargers(REGION_MAP[r_name]))
+            for zcode in region_codes:
+                all_chargers.extend(get_chargers(zcode))
 
             categorized = {"초급속(200kW+)": {}, "급속(50~100kW)": {}, "완속": {}}
 

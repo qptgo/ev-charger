@@ -342,10 +342,10 @@ with tab2:
                     )
                 st.divider()
 
-# 탭 3: 러닝 코스 지도 (우클릭/길게 누르기 컨텍스트 메뉴 및 초기 빈 화면)
+# 탭 3: 러닝 코스 지도 (하천/자전거길 우선 모드 + 경유지 추가 지원)
 with tab3:
     if "map_center" not in st.session_state:
-        st.session_state.map_center = [35.5380, 129.3000]  # 울산 기본 중심점
+        st.session_state.map_center = [35.5320, 129.3250]  # 여천천 중심
 
     col_s1, col_s2 = st.columns([3, 1])
     with col_s1:
@@ -359,7 +359,6 @@ with tab3:
 
     center_lat, center_lon = st.session_state.map_center
 
-    # Leaflet 자체 인터랙티브 지도 HTML (초기 세팅 없음, 우클릭/롱프레스 지원)
     running_map_html = f"""
     <!DOCTYPE html>
     <html>
@@ -370,32 +369,47 @@ with tab3:
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
             body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: transparent; }}
-            #info-bar {{
-                background: #1E1E1E; color: #FFFFFF; padding: 12px 16px; border-radius: 8px;
-                margin-bottom: 10px; font-size: 14px; display: flex; justify-content: space-between;
-                align-items: center; border: 1px solid #333;
+            #top-controls {{
+                background: #1E1E1E; color: #FFFFFF; padding: 10px 14px; border-radius: 8px;
+                margin-bottom: 8px; font-size: 13px; display: flex; flex-wrap: wrap;
+                justify-content: space-between; align-items: center; gap: 8px; border: 1px solid #333;
             }}
-            #map {{ width: 100%; height: 500px; border-radius: 8px; border: 1px solid #333; }}
-            .popup-menu {{ display: flex; flex-direction: column; gap: 6px; min-width: 150px; padding: 2px; }}
+            #info-bar {{
+                background: #262730; color: #FFFFFF; padding: 10px 14px; border-radius: 8px;
+                margin-bottom: 8px; font-size: 14px; border: 1px solid #333;
+            }}
+            #map {{ width: 100%; height: 480px; border-radius: 8px; border: 1px solid #333; }}
+            .popup-menu {{ display: flex; flex-direction: column; gap: 6px; min-width: 165px; padding: 2px; }}
             .popup-btn {{
-                padding: 9px 12px; border: none; border-radius: 6px; cursor: pointer;
+                padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer;
                 font-weight: 600; font-size: 13px; color: white; text-align: center;
             }}
             .btn-start {{ background-color: #10B981; }}
+            .btn-via {{ background-color: #3B82F6; }}
             .btn-end {{ background-color: #EF4444; }}
-            .btn-loop {{ background-color: #3B82F6; }}
-            .btn-clear {{ background-color: #4B5563; padding: 6px 10px; font-size: 12px; border-radius: 5px; color: white; border: none; cursor: pointer; }}
+            .btn-clear {{ background-color: #4B5563; padding: 6px 12px; font-size: 12px; border-radius: 5px; color: white; border: none; cursor: pointer; }}
+            select {{ background: #333; color: white; border: 1px solid #555; padding: 5px 8px; border-radius: 5px; font-size: 13px; }}
         </style>
     </head>
     <body>
+        <div id="top-controls">
+            <div>
+                <label>🛣️ <b>길찾기 기준:</b> </label>
+                <select id="profile-select" onchange="calculateRoute()">
+                    <option value="routed-bike" selected>🚴 하천 산책로 / 자전거도로 우선 (추천)</option>
+                    <option value="routed-foot">🚶 일반 보행자 / 최단 골목길 우선</option>
+                    <option value="straight">📏 핀끼리 직선 연결 (수동 코스 그리기)</option>
+                </select>
+            </div>
+            <button class="btn-clear" onclick="clearAll()">🔄 모든 핀 초기화</button>
+        </div>
         <div id="info-bar">
-            <span id="status-text">💡 지도를 <b>우클릭(PC)</b>하거나 <b>길게 누르면(모바일)</b> 핀 설정 메뉴가 뜹니다.</span>
-            <button class="btn-clear" onclick="clearAll()">초기화</button>
+            <span id="status-text">💡 하천 산책로 위를 <b>우클릭(PC)</b> 또는 <b>길게 터치(모바일)</b>하여 출발/경유/도착지를 찍으세요.</span>
         </div>
         <div id="map"></div>
 
         <script>
-            var map = L.map('map').setView([{center_lat}, {center_lon}], 14);
+            var map = L.map('map').setView([{center_lat}, {center_lon}], 15);
             L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
                 maxZoom: 19,
                 attribution: '© OpenStreetMap'
@@ -403,15 +417,19 @@ with tab3:
 
             var startMarker = null;
             var endMarker = null;
+            var viaMarkers = [];
             var routeLine = null;
-            var currentPopup = null;
 
             var greenIcon = new L.Icon({{
                 iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
                 shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
                 iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
             }});
-
+            var blueIcon = new L.Icon({{
+                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+            }});
             var redIcon = new L.Icon({{
                 iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
                 shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
@@ -424,28 +442,21 @@ with tab3:
                 var content = `
                     <div class="popup-menu">
                         <button class="popup-btn btn-start" onclick="setStart(${{lat}}, ${{lng}})">🟢 출발지로 설정</button>
+                        <button class="popup-btn btn-via" onclick="addVia(${{lat}}, ${{lng}})">🔵 경유지(산책로) 추가</button>
                         <button class="popup-btn btn-end" onclick="setEnd(${{lat}}, ${{lng}})">🔴 도착지로 설정</button>
-                        <hr style="margin:2px 0; border:0; border-top:1px solid #ddd;">
-                        <button class="popup-btn btn-loop" onclick="makeLoop(${{lat}}, ${{lng}})">🔄 여기서 목표거리 왕복</button>
                     </div>
                 `;
-                currentPopup = L.popup().setLatLng(latlng).setContent(content).openOn(map);
+                L.popup().setLatLng(latlng).setContent(content).openOn(map);
             }}
 
-            // PC 우클릭 및 모바일 롱프레스(contextmenu) 감지
-            map.on('contextmenu', function(e) {{
-                openPinMenu(e.latlng);
-            }});
+            map.on('contextmenu', function(e) {{ openPinMenu(e.latlng); }});
 
-            // 아이폰 사파리 등 모바일 터치 길게 누르기 보강
             var touchTimer = null;
             var touchLatLng = null;
             map.on('touchstart', function(e) {{
                 if (e.originalEvent.touches.length === 1) {{
                     touchLatLng = e.latlng;
-                    touchTimer = setTimeout(function() {{
-                        openPinMenu(touchLatLng);
-                    }}, 600);
+                    touchTimer = setTimeout(function() {{ openPinMenu(touchLatLng); }}, 600);
                 }}
             }});
             map.on('touchend touchmove', function() {{
@@ -457,11 +468,15 @@ with tab3:
                 if (startMarker) map.removeLayer(startMarker);
                 startMarker = L.marker([lat, lng], {{icon: greenIcon, draggable: true}}).addTo(map);
                 startMarker.on('dragend', calculateRoute);
-                if (!endMarker) {{
-                    document.getElementById('status-text').innerHTML = "🟢 <b>출발지 설정됨.</b> 도착할 곳을 다시 우클릭(길게 터치)하세요.";
-                }} else {{
-                    calculateRoute();
-                }}
+                updateStatusOrRoute();
+            }};
+
+            window.addVia = function(lat, lng) {{
+                map.closePopup();
+                var m = L.marker([lat, lng], {{icon: blueIcon, draggable: true}}).addTo(map);
+                m.on('dragend', calculateRoute);
+                viaMarkers.push(m);
+                updateStatusOrRoute();
             }};
 
             window.setEnd = function(lat, lng) {{
@@ -469,43 +484,62 @@ with tab3:
                 if (endMarker) map.removeLayer(endMarker);
                 endMarker = L.marker([lat, lng], {{icon: redIcon, draggable: true}}).addTo(map);
                 endMarker.on('dragend', calculateRoute);
-                if (!startMarker) {{
-                    document.getElementById('status-text').innerHTML = "🔴 <b>도착지 설정됨.</b> 출발할 곳을 우클릭(길게 터치)하세요.";
-                }} else {{
-                    calculateRoute();
-                }}
+                updateStatusOrRoute();
             }};
 
-            window.makeLoop = function(lat, lng) {{
-                map.closePopup();
-                var km = prompt("원하는 총 왕복 러닝 거리(km)를 숫자로 입력하세요:", "5");
-                if (!km || isNaN(km)) return;
-                var halfDistKm = (parseFloat(km) / 2.0) / 1.25;
-                var R = 6371.0;
-                var lat1 = lat * Math.PI / 180;
-                var lon1 = lng * Math.PI / 180;
-                var lat2 = Math.asin(Math.sin(lat1)*Math.cos(halfDistKm/R) + Math.cos(lat1)*Math.sin(halfDistKm/R));
-                var tLat = lat2 * 180 / Math.PI;
-                
-                setStart(lat, lng);
-                setEnd(tLat, lng);
-            }};
+            function updateStatusOrRoute() {{
+                if (startMarker && endMarker) {{
+                    calculateRoute();
+                }} else if (startMarker && !endMarker) {{
+                    document.getElementById('status-text').innerHTML = "🟢 <b>출발지 설정됨.</b> 산책로를 따라 경유지(🔵)나 도착지(🔴)를 찍으세요.";
+                }} else if (!startMarker && endMarker) {{
+                    document.getElementById('status-text').innerHTML = "🔴 <b>도착지 설정됨.</b> 출발지(🟢)를 찍으세요.";
+                }}
+            }}
 
             window.clearAll = function() {{
                 if (startMarker) {{ map.removeLayer(startMarker); startMarker = null; }}
                 if (endMarker) {{ map.removeLayer(endMarker); endMarker = null; }}
+                viaMarkers.forEach(m => map.removeLayer(m));
+                viaMarkers = [];
                 if (routeLine) {{ map.removeLayer(routeLine); routeLine = null; }}
                 map.closePopup();
-                document.getElementById('status-text').innerHTML = "💡 지도를 <b>우클릭(PC)</b>하거나 <b>길게 누르면(모바일)</b> 핀 설정 메뉴가 뜹니다.";
+                document.getElementById('status-text').innerHTML = "💡 하천 산책로 위를 <b>우클릭(PC)</b> 또는 <b>길게 터치(모바일)</b>하여 출발/경유/도착지를 찍으세요.";
             }};
 
-            function calculateRoute() {{
-                if (!startMarker || !endMarker) return;
-                var s = startMarker.getLatLng();
-                var e = endMarker.getLatLng();
-                document.getElementById('status-text').innerHTML = "⏳ 러닝 경로 및 거리 계산 중...";
+            function haversineDist(lat1, lon1, lat2, lon2) {{
+                var R = 6371.0;
+                var dLat = (lat2 - lat1) * Math.PI / 180;
+                var dLon = (lon2 - lon1) * Math.PI / 180;
+                var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+                        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                        Math.sin(dLon/2)*Math.sin(dLon/2);
+                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            }}
 
-                var url = `https://routing.openstreetmap.de/routed-foot/route/v1/driving/${{s.lng}},${{s.lat}};${{e.lng}},${{e.lat}}?overview=full&geometries=geojson`;
+            window.calculateRoute = function() {{
+                if (!startMarker || !endMarker) return;
+                var profile = document.getElementById('profile-select').value;
+                var pts = [startMarker.getLatLng()];
+                viaMarkers.forEach(m => pts.push(m.getLatLng()));
+                pts.push(endMarker.getLatLng());
+
+                if (profile === 'straight') {{
+                    var coords = pts.map(p => [p.lat, p.lng]);
+                    var dist = 0;
+                    for (var i = 0; i < pts.length - 1; i++) {{
+                        dist += haversineDist(pts[i].lat, pts[i].lng, pts[i+1].lat, pts[i+1].lng);
+                    }}
+                    if (routeLine) map.removeLayer(routeLine);
+                    routeLine = L.polyline(coords, {{color: '#FF4B4B', weight: 5, dashArray: '8, 8'}}).addTo(map);
+                    document.getElementById('status-text').innerHTML = `📏 <b>직선 편도: ${{dist.toFixed(2)}} km</b> &nbsp;|&nbsp; 🔄 <b>왕복: ${{(dist*2).toFixed(2)}} km</b>`;
+                    return;
+                }}
+
+                document.getElementById('status-text').innerHTML = "⏳ 산책로 코스 탐색 중...";
+                var coordStr = pts.map(p => `${{p.lng}},${{p.lat}}`).join(';');
+                var url = `https://routing.openstreetmap.de/${{profile}}/route/v1/driving/${{coordStr}}?overview=full&geometries=geojson`;
+
                 fetch(url)
                     .then(res => res.json())
                     .then(data => {{
@@ -515,16 +549,16 @@ with tab3:
                             var roundKm = (distKm * 2).toFixed(2);
 
                             if (routeLine) map.removeLayer(routeLine);
-                            routeLine = L.polyline(coords, {{color: '#FF4B4B', weight: 5, opacity: 0.85}}).addTo(map);
-                            document.getElementById('status-text').innerHTML = `🏃‍♂️ <b>편도: ${{distKm}} km</b> &nbsp;|&nbsp; 🔄 <b>왕복: ${{roundKm}} km</b> <span style="font-size:12px; color:#aaa;">(핀을 드래그해 미세조정 가능)</span>`;
+                            routeLine = L.polyline(coords, {{color: '#FF4B4B', weight: 5, opacity: 0.9}}).addTo(map);
+                            document.getElementById('status-text').innerHTML = `🏃‍♂️ <b>편도: ${{distKm}} km</b> &nbsp;|&nbsp; 🔄 <b>왕복: ${{roundKm}} km</b> <span style="font-size:12px; color:#aaa;">(경유지 ${{viaMarkers.length}}곳 포함)</span>`;
                         }}
                     }})
                     .catch(() => {{
-                        document.getElementById('status-text').innerHTML = "⚠️ 경로 서버 연결 지연. 핀을 조금만 옮겨보세요.";
+                        document.getElementById('status-text').innerHTML = "⚠️ 경로 탐색 실패. 핀을 산책로 선 가까이로 옮겨보세요.";
                     }});
-            }}
+            }};
         </script>
     </body>
     </html>
     """
-    components.html(running_map_html, height=580, scrolling=False)
+    components.html(running_map_html, height=620, scrolling=False)

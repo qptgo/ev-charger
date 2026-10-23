@@ -1,8 +1,8 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import math
 import folium
-from streamlit_folium import st_folium
 
 # API 키 고정
 KAKAO_API_KEY = "0291962fedf3b68a740109ab85832466"
@@ -75,7 +75,7 @@ def get_route_coords(start_lat, start_lon, end_lat, end_lon):
         for road in section["roads"]:
             v = road["vertexes"]
             for i in range(0, len(v), 2):
-                route_coords.append((v[i+1], v[i])) # (lat, lon)
+                route_coords.append((v[i+1], v[i]))
     return route_coords
 
 def detect_regions_from_route(route_coords):
@@ -363,19 +363,18 @@ with tab3:
             with st.spinner("경로를 지도 위에 그리는 중..."):
                 route_pts = get_route_coords(rs_lat, rs_lon, re_lat, re_lon)
                 
-                # 실제 총 이동 거리 계산
                 total_km = 0.0
                 for i in range(len(route_pts) - 1):
                     total_km += haversine(route_pts[i][0], route_pts[i][1], route_pts[i+1][0], route_pts[i+1][1])
                 
                 st.success(f"🎯 **{r_start}** ➔ **{r_end}** 러닝 코스 거리: **{total_km:.2f} km**")
                 
-                # 1. 화면 내 Folium 지도 생성 (중간 지점 중심)
+                # 1. Folium 지도 객체 생성
                 mid_lat = (rs_lat + re_lat) / 2
                 mid_lon = (rs_lon + re_lon) / 2
                 m = folium.Map(location=[mid_lat, mid_lon], zoom_start=13)
                 
-                # 2. 출발지 마커 (초록색 깃발)
+                # 2. 마커 추가
                 folium.Marker(
                     [rs_lat, rs_lon],
                     popup=f"출발: {r_start}",
@@ -383,7 +382,6 @@ with tab3:
                     icon=folium.Icon(color="green", icon="play")
                 ).add_to(m)
                 
-                # 3. 도착지 마커 (빨간색 깃발)
                 folium.Marker(
                     [re_lat, re_lon],
                     popup=f"도착: {r_end}",
@@ -391,7 +389,7 @@ with tab3:
                     icon=folium.Icon(color="red", icon="flag")
                 ).add_to(m)
                 
-                # 4. 러닝 경로 선 그리기 (파란색 실선)
+                # 3. 경로 선 그리기
                 if route_pts:
                     folium.PolyLine(
                         route_pts,
@@ -401,5 +399,6 @@ with tab3:
                         tooltip=f"러닝 코스 ({total_km:.2f}km)"
                     ).add_to(m)
                 
-                # 5. 스트림릿 웹 화면에 지도 표시
-                st_folium(m, width="100%", height=450)
+                # 4. 스트림릿 HTML 렌더러로 고정 (새로고침 풀림 버그 방지)
+                map_html = m._repr_html_()
+                components.html(map_html, height=500, scrolling=False)

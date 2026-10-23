@@ -1,6 +1,8 @@
 import streamlit as st
 import requests
 import math
+import folium
+from streamlit_folium import st_folium
 
 # API 키 고정
 KAKAO_API_KEY = "0291962fedf3b68a740109ab85832466"
@@ -67,11 +69,13 @@ def get_route_coords(start_lat, start_lon, end_lat, end_lon):
     params = {"origin": f"{start_lon},{start_lat}", "destination": f"{end_lon},{end_lat}"}
     res = requests.get(url, headers=headers, params=params).json()
     route_coords = []
+    if not res.get("routes"):
+        return route_coords
     for section in res["routes"][0]["sections"]:
         for road in section["roads"]:
             v = road["vertexes"]
-            for i in range(0, len(v), 10):
-                route_coords.append((v[i+1], v[i]))
+            for i in range(0, len(v), 2):
+                route_coords.append((v[i+1], v[i])) # (lat, lon)
     return route_coords
 
 def detect_regions_from_route(route_coords):
@@ -79,10 +83,9 @@ def detect_regions_from_route(route_coords):
     headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY.strip()}"}
     detected_codes = set()
     detected_names = []
-    
     step = max(1, len(route_coords) // 15)
     sample_points = route_coords[::step]
-    if route_coords[-1] not in sample_points:
+    if route_coords and route_coords[-1] not in sample_points:
         sample_points.append(route_coords[-1])
         
     for lat, lon in sample_points:
@@ -197,7 +200,7 @@ def haversine(lat1, lon1, lat2, lon2):
 st.set_page_config(page_title="EV & Running Hub", page_icon="⚡")
 st.subheader("⚡ 전기차 & 러닝 통합 매니저")
 
-tab1, tab2, tab3 = st.tabs(["🚗 충전소 (경로)", "📍 충전소 (반경)", "🏃‍♂️ 러닝 코스 추천"])
+tab1, tab2, tab3 = st.tabs(["🚗 충전소 (경로)", "📍 충전소 (반경)", "🏃‍♂️ 러닝 코스 지도"])
 
 # 탭 1: 경로 검색
 with tab1:
@@ -340,55 +343,63 @@ with tab2:
                     )
                 st.divider()
 
-# 탭 3: 러닝 코스 추천
+# 탭 3: 러닝 코스 지도 연동
 with tab3:
-    st.markdown("### 🏃‍♂️ 러닝 코스 설계 및 지도 연동")
-    run_mode = st.radio("러닝 방식 선택", ["출발지 ➔ 도착지 (편도)", "원점 회귀 (순환 코스 짐작)"])
+    st.markdown("### 🏃‍♂️ 러닝 코스 지도 확인")
     
-    if run_mode == "출발지 ➔ 도착지 (편도)":
-        r_start = st.text_input("러닝 출발지", value="태화강국가정원", key="run_start")
-        r_end = st.text_input("러닝 도착지", value="울산대공원 동문", key="run_end")
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        r_start = st.text_input("출발지 (현재위치/장소명)", value="태화강국가정원", key="run_start")
+    with col_r2:
+        r_end = st.text_input("도착지 (반환점/목적지)", value="울산대공원 동문", key="run_end")
         
-        if st.button("러닝 편도 코스 계산하기", type="primary", use_container_width=True):
-            rs_lat, rs_lon = get_coords(r_start)
-            re_lat, re_lon = get_coords(r_end)
-            if not rs_lat or not re_lat:
-                st.error("위치를 찾을 수 없습니다.")
-            else:
+    if st.button("🗺️ 지도에 러닝 코스 그리기", type="primary", use_container_width=True):
+        rs_lat, rs_lon = get_coords(r_start)
+        re_lat, re_lon = get_coords(r_end)
+        
+        if not rs_lat or not re_lat:
+            st.error("장소 위치를 찾을 수 없습니다. 정확한 건물명이나 지명을 적어주세요.")
+        else:
+            with st.spinner("경로를 지도 위에 그리는 중..."):
                 route_pts = get_route_coords(rs_lat, rs_lon, re_lat, re_lon)
-                # 대략적 거리 계산 (직선거리 합산 또는 샘플링)
-                dist = 0
+                
+                # 실제 총 이동 거리 계산
+                total_km = 0.0
                 for i in range(len(route_pts) - 1):
-                    dist += haversine(route_pts[i][0], route_pts[i][1], route_pts[i+1][0], route_pts[i+1][1])
+                    total_km += haversine(route_pts[i][0], route_pts[i][1], route_pts[i+1][0], route_pts[i+1][1])
                 
-                st.success(f"🎯 예상 편도 러닝 거리: 약 **{dist:.2f} km**")
-                st.info("💡 인도 및 산책로가 포함된 정밀한 길은 아래 버튼을 눌러 카카오맵/네이버 지도에서 확인하세요!")
+                st.success(f"🎯 **{r_start}** ➔ **{r_end}** 러닝 코스 거리: **{total_km:.2f} km**")
                 
-                # 지도 바로가기 버튼 링크 생성
-                kakaomap_url = f"https://map.kakao.com/?sName={r_start}&eName={r_end}"
-                navermap_url = f"https://map.naver.com/p/directions/-/--/transit?c=13.00,0,0,0,dh"
+                # 1. 화면 내 Folium 지도 생성 (중간 지점 중심)
+                mid_lat = (rs_lat + re_lat) / 2
+                mid_lon = (rs_lon + re_lon) / 2
+                m = folium.Map(location=[mid_lat, mid_lon], zoom_start=13)
                 
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.markdown(f"[🗺️ 카카오맵에서 보기]({kakaomap_url})", unsafe_allow_html=True)
-                with col_b:
-                    st.markdown(f"[🗺️ 네이버 지도에서 보기]({navermap_url})", unsafe_allow_html=True)
-
-    else:
-        r_home = st.text_input("출발(복귀) 장소", value="대공원한신더휴", key="run_home")
-        target_km = st.slider("목표 러닝 거리 (km)", 3.0, 20.0, 5.0, 0.5)
-        
-        if st.button("원형 루프 반환점 추천받기", type="primary", use_container_width=True):
-            rh_lat, rh_lon = get_coords(r_home)
-            if not rh_lat:
-                st.error("위치를 찾을 수 없습니다.")
-            else:
-                # 목표 거리의 절반 반경 (편도 거리) 계산 후 대략적 반환점 안내
-                half_dist = target_km / 2.0
-                st.success(f"🎯 목표 거리 {target_km}km를 채우려면 편도 약 **{half_dist:.1f}km** 지점(반환점)까지 갔다가 돌아오면 됩니다.")
-                st.markdown(
-                    f"💡 주변 하천 산책로, 공원, 인도를 따라 **{r_home}**에서 출발해 "
-                    f"반경 약 {half_dist}km 거리를 찍고 돌아오는 코스를 설정해 보세요!"
-                )
-                kakaomap_url = f"https://map.kakao.com/?q={r_home}"
-                st.markdown(f"[🗺️ '{r_home}' 주변 지도 열기]({kakaomap_url})", unsafe_allow_html=True)
+                # 2. 출발지 마커 (초록색 깃발)
+                folium.Marker(
+                    [rs_lat, rs_lon],
+                    popup=f"출발: {r_start}",
+                    tooltip="출발지",
+                    icon=folium.Icon(color="green", icon="play")
+                ).add_to(m)
+                
+                # 3. 도착지 마커 (빨간색 깃발)
+                folium.Marker(
+                    [re_lat, re_lon],
+                    popup=f"도착: {r_end}",
+                    tooltip="도착지",
+                    icon=folium.Icon(color="red", icon="flag")
+                ).add_to(m)
+                
+                # 4. 러닝 경로 선 그리기 (파란색 실선)
+                if route_pts:
+                    folium.PolyLine(
+                        route_pts,
+                        color="#2B82F6",
+                        weight=5,
+                        opacity=0.8,
+                        tooltip=f"러닝 코스 ({total_km:.2f}km)"
+                    ).add_to(m)
+                
+                # 5. 스트림릿 웹 화면에 지도 표시
+                st_folium(m, width="100%", height=450)

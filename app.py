@@ -44,7 +44,6 @@ def match_operator(busi_id, busi_nm):
     return None
 
 def classify_charger_speed(kw):
-    """사용자 요청: 완속은 20~30kW로 한정"""
     if 20 <= kw <= 30:
         return "완속(20~30kW)", "완속"
     elif 50 <= kw < 200:
@@ -195,22 +194,22 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 # --- 웹 화면 구성 ---
-st.set_page_config(page_title="전기차 최저가 충전소", page_icon="⚡")
-st.subheader("⚡ 전기차 최저가 충전소 찾기")
+st.set_page_config(page_title="EV & Running Hub", page_icon="⚡")
+st.subheader("⚡ 전기차 & 러닝 통합 매니저")
 
-tab1, tab2 = st.tabs(["🚗 가는 길 경로 검색", "📍 특정 위치 반경 검색"])
+tab1, tab2, tab3 = st.tabs(["🚗 충전소 (경로)", "📍 충전소 (반경)", "🏃‍♂️ 러닝 코스 추천"])
 
 # 탭 1: 경로 검색
 with tab1:
     col1, col2 = st.columns(2)
     with col1:
-        start_place = st.text_input("출발지", value="대공원한신더휴")
+        start_place = st.text_input("출발지", value="대공원한신더휴", key="t1_start")
     with col2:
-        end_place = st.text_input("목적지", value="솔봉숯불구이")
+        end_place = st.text_input("목적지", value="솔봉숯불구이", key="t1_end")
 
     max_dist = st.slider("경로 이탈 허용 거리 (km)", 0.5, 5.0, 2.0, 0.5, key="route_slider")
 
-    if st.button("경로 주변 최저가 찾기", type="primary", use_container_width=True):
+    if st.button("경로 주변 최저가 찾기", type="primary", use_container_width=True, key="btn_t1"):
         s_lat, s_lon = get_coords(start_place)
         e_lat, e_lon = get_coords(end_place)
         
@@ -229,10 +228,8 @@ with tab1:
                 categorized = {"초급속(200kW+)": {}, "급속(50~100kW)": {}, "완속(20~30kW)": {}}
 
                 for ch in all_chargers:
-                    # 비공개 충전소(limitYn == 'Y') 및 대기중 아님 제외
                     if ch.get("limitYn") == "Y" or ch.get("stat") != "2":
                         continue
-
                     std_operator = match_operator(ch.get("busiId", ""), ch.get("busiNm", ""))
                     if not std_operator:
                         continue
@@ -240,13 +237,11 @@ with tab1:
                         c_lat, c_lon = float(ch["lat"]), float(ch["lng"])
                     except (ValueError, TypeError):
                         continue
-                    
                     if not any(haversine(r_lat, r_lon, c_lat, c_lon) <= max_dist for r_lat, r_lon in route):
                         continue
 
                     out_str = str(ch.get("output", "0")).strip()
                     kw = int(out_str) if out_str.isdigit() else 0
-                    
                     s_type, p_key = classify_charger_speed(kw)
                     if not s_type:
                         continue
@@ -282,10 +277,10 @@ with tab1:
 
 # 탭 2: 반경 검색
 with tab2:
-    center_place = st.text_input("기준 위치 (주소 또는 장소명)", value="울산시청")
+    center_place = st.text_input("기준 위치 (주소 또는 장소명)", value="울산시청", key="t2_center")
     radius_km = st.slider("반경 거리 선택 (km)", 1.0, 20.0, 3.0, 1.0, key="radius_slider")
 
-    if st.button("주변 반경 내 최저가 찾기", type="primary", use_container_width=True):
+    if st.button("주변 반경 내 최저가 찾기", type="primary", use_container_width=True, key="btn_t2"):
         c_lat, c_lon = get_coords(center_place)
         
         if not c_lat:
@@ -298,10 +293,8 @@ with tab2:
                 categorized = {"초급속(200kW+)": {}, "급속(50~100kW)": {}, "완속(20~30kW)": {}}
 
                 for ch in chargers:
-                    # 비공개 충전소 및 대기중 아님 제외
                     if ch.get("limitYn") == "Y" or ch.get("stat") != "2":
                         continue
-
                     std_operator = match_operator(ch.get("busiId", ""), ch.get("busiNm", ""))
                     if not std_operator:
                         continue
@@ -309,13 +302,11 @@ with tab2:
                         lat, lon = float(ch["lat"]), float(ch["lng"])
                     except (ValueError, TypeError):
                         continue
-                    
                     if haversine(c_lat, c_lon, lat, lon) > radius_km:
                         continue
 
                     out_str = str(ch.get("output", "0")).strip()
                     kw = int(out_str) if out_str.isdigit() else 0
-                    
                     s_type, p_key = classify_charger_speed(kw)
                     if not s_type:
                         continue
@@ -348,3 +339,56 @@ with tab2:
                         f"📍 {st_info['addr']}"
                     )
                 st.divider()
+
+# 탭 3: 러닝 코스 추천
+with tab3:
+    st.markdown("### 🏃‍♂️ 러닝 코스 설계 및 지도 연동")
+    run_mode = st.radio("러닝 방식 선택", ["출발지 ➔ 도착지 (편도)", "원점 회귀 (순환 코스 짐작)"])
+    
+    if run_mode == "출발지 ➔ 도착지 (편도)":
+        r_start = st.text_input("러닝 출발지", value="태화강국가정원", key="run_start")
+        r_end = st.text_input("러닝 도착지", value="울산대공원 동문", key="run_end")
+        
+        if st.button("러닝 편도 코스 계산하기", type="primary", use_container_width=True):
+            rs_lat, rs_lon = get_coords(r_start)
+            re_lat, re_lon = get_coords(r_end)
+            if not rs_lat or not re_lat:
+                st.error("위치를 찾을 수 없습니다.")
+            else:
+                route_pts = get_route_coords(rs_lat, rs_lon, re_lat, re_lon)
+                # 대략적 거리 계산 (직선거리 합산 또는 샘플링)
+                dist = 0
+                for i in range(len(route_pts) - 1):
+                    dist += haversine(route_pts[i][0], route_pts[i][1], route_pts[i+1][0], route_pts[i+1][1])
+                
+                st.success(f"🎯 예상 편도 러닝 거리: 약 **{dist:.2f} km**")
+                st.info("💡 인도 및 산책로가 포함된 정밀한 길은 아래 버튼을 눌러 카카오맵/네이버 지도에서 확인하세요!")
+                
+                # 지도 바로가기 버튼 링크 생성
+                kakaomap_url = f"https://map.kakao.com/?sName={r_start}&eName={r_end}"
+                navermap_url = f"https://map.naver.com/p/directions/-/--/transit?c=13.00,0,0,0,dh"
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.markdown(f"[🗺️ 카카오맵에서 보기]({kakaomap_url})", unsafe_allow_html=True)
+                with col_b:
+                    st.markdown(f"[🗺️ 네이버 지도에서 보기]({navermap_url})", unsafe_allow_html=True)
+
+    else:
+        r_home = st.text_input("출발(복귀) 장소", value="대공원한신더휴", key="run_home")
+        target_km = st.slider("목표 러닝 거리 (km)", 3.0, 20.0, 5.0, 0.5)
+        
+        if st.button("원형 루프 반환점 추천받기", type="primary", use_container_width=True):
+            rh_lat, rh_lon = get_coords(r_home)
+            if not rh_lat:
+                st.error("위치를 찾을 수 없습니다.")
+            else:
+                # 목표 거리의 절반 반경 (편도 거리) 계산 후 대략적 반환점 안내
+                half_dist = target_km / 2.0
+                st.success(f"🎯 목표 거리 {target_km}km를 채우려면 편도 약 **{half_dist:.1f}km** 지점(반환점)까지 갔다가 돌아오면 됩니다.")
+                st.markdown(
+                    f"💡 주변 하천 산책로, 공원, 인도를 따라 **{r_home}**에서 출발해 "
+                    f"반경 약 {half_dist}km 거리를 찍고 돌아오는 코스를 설정해 보세요!"
+                )
+                kakaomap_url = f"https://map.kakao.com/?q={r_home}"
+                st.markdown(f"[🗺️ '{r_home}' 주변 지도 열기]({kakaomap_url})", unsafe_allow_html=True)
